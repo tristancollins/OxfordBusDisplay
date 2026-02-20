@@ -1,0 +1,34 @@
+[Unit]
+Description=OxonTime ePaper display
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=tristan
+WorkingDirectory=/home/tristan/e-Paper/RaspberryPi_JetsonNano/python
+
+# Make Waveshare library importable without editing the script
+Environment=PYTHONPATH=/home/tristan/e-Paper/RaspberryPi_JetsonNano/python/lib
+
+# Your config
+Environment=OXON_STOP=340000022GEO
+Environment=MODE=grid
+Environment=WALK_MIN=5
+
+# Refresh policy (optional)
+Environment=DAY_REFRESH=180
+Environment=FAST_REFRESH=60
+Environment=FAST_WINDOW_MIN=10
+
+# Quiet hours (optional)
+Environment=QUIET_START=22
+Environment=QUIET_END=6
+Environment=QUIET_REFRESH=1800
+
+ExecStart=/usr/bin/python3 /home/tristan/e-Paper/RaspberryPi_JetsonNano/python/oxontime_epaper_landscape.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
