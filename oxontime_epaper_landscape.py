@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 OxonTime -> Waveshare 2.13" ePaper HAT (B) Red/Black/White (250x122), landscape.
@@ -6,8 +5,13 @@ OxonTime -> Waveshare 2.13" ePaper HAT (B) Red/Black/White (250x122), landscape.
 DEFAULT MODE=grid:
 - Current time at top-left
 - Three ETAs (minutes-only) left-to-right across the screen
-- Rendered as big 7-segment digits sized to be readable from ~1m
-- "Most catchable" (soonest ETA >= WALK_MIN) is highlighted in RED and drawn THICKER
+- Rendered as large 7-segment digits (high legibility at ~1m)
+- "Most catchable" (soonest ETA >= WALK_MIN) highlighted in RED:
+    * red border + corner chevrons (pops anywhere in grid)
+    * normal segment thickness (not extra thick)
+
+Non-highlight (black) digits:
+- Rendered at 95% size, centered in the column (adds whitespace around)
 
 Optional MODE=list:
 - Route / destination / display_time lines (legacy)
@@ -18,14 +22,6 @@ Quiet hours:
 Refresh:
 - DAY_REFRESH normally
 - FAST_REFRESH when highlighted ETA <= FAST_WINDOW_MIN
-
-Run (from Waveshare repo python directory):
-  PYTHONPATH="$(pwd)/lib" python3 oxontime_epaper_landscape.py
-
-Env vars:
-  OXON_STOP, MODE, WALK_MIN,
-  DAY_REFRESH, FAST_REFRESH, FAST_WINDOW_MIN,
-  QUIET_START, QUIET_END, QUIET_REFRESH
 """
 
 from __future__ import annotations
@@ -61,9 +57,12 @@ QUIET_REFRESH: int = int(os.environ.get("QUIET_REFRESH", "1800"))
 # Panel canvas (landscape)
 W, H = 250, 122
 
+# Non-highlight digits scale
+NON_HIGHLIGHT_SCALE = 0.95  # requested 95%
+
 
 # ----------------------------
-# Fonts
+# Fonts (header + list mode + quiet screen only)
 # ----------------------------
 def _ttf(path: str, size: int) -> ImageFont.ImageFont:
     try:
@@ -179,12 +178,10 @@ def fetch_calls() -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
 
 
 # ----------------------------
-# 7-segment renderer (big, readable)
+# 7-segment renderer
 # ----------------------------
 
-# Segment names:
-#   a (top), b (top-right), c (bottom-right), d (bottom),
-#   e (bottom-left), f (top-left), g (middle)
+# Segment names: a(top), b(tr), c(br), d(bottom), e(bl), f(tl), g(mid)
 SEGMENTS = {
     "0": "abcedf",
     "1": "bc",
@@ -199,16 +196,14 @@ SEGMENTS = {
     "-": "g",
 }
 
+
 def _seg_rects(x: int, y: int, w: int, h: int, t: int) -> Dict[str, Tuple[int, int, int, int]]:
-    # Clamp thickness
     t = max(2, min(t, min(w, h) // 4))
 
-    # Horizontal segments
     a = (x + t, y, x + w - t, y + t)
     d = (x + t, y + h - t, x + w - t, y + h)
     g = (x + t, y + (h - t) // 2, x + w - t, y + (h + t) // 2)
 
-    # Vertical segments split around middle with a gap
     gap = max(1, t // 2)
     top_h = max(1, (h - 3 * t) // 2)
     bot_h = top_h
@@ -228,18 +223,11 @@ def draw_7seg_digit(draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, c
         draw.rectangle(rects[seg], fill=fill)
 
 
-def _best_digit_thickness(col_w: int, box_h: int, emphasize: bool) -> int:
-    """
-    Pick a thickness that reads well at ~1m.
-    For this panel, aim for relatively chunky segments.
-    """
-    base = min(col_w, box_h)
-    # Empirically good range for 250x122 with 3 columns:
-    # normal: ~8-10px, emphasized: ~11-13px depending on col_w
-    t = max(6, base // 8)  # chunky
-    if emphasize:
-        t = int(t * 1.35)  # thicker catchable
-    return max(6, min(t, 16))
+def _base_thickness(char_w: int, box_h: int) -> int:
+    # Baseline tuned for 250x122, 3 columns: readable but not chunky.
+    base = min(char_w, box_h)
+    t = max(6, base // 9)
+    return min(t, 14)
 
 
 def draw_7seg_text(
@@ -251,7 +239,6 @@ def draw_7seg_text(
     text: str,
     *,
     fill: int = 0,
-    emphasize: bool = False
 ) -> None:
     """
     Draw a short string ('5', '12', '99+') as 7-seg digits filling the box.
@@ -261,7 +248,6 @@ def draw_7seg_text(
     if not text:
         text = "--"
 
-    # Limit and sanitize
     allowed = "0123456789-+"
     text = "".join([c for c in text if c in allowed])[:3]
     if not text:
@@ -269,35 +255,24 @@ def draw_7seg_text(
 
     n = len(text)
 
-    # Gaps and char width tuned for readability
-    gap = max(3, w // 28)  # small but visible separation
+    gap = max(3, w // 30)
     total_gap = gap * (n - 1)
-    cw = max(10, (w - total_gap) // n)
+    cw = max(12, (w - total_gap) // n)
 
-    # Thickness and inner padding
-    thickness = _best_digit_thickness(cw, h, emphasize)
-    inset = max(2, thickness // 2)
+    t = _base_thickness(cw, h)
+    inset = max(2, t // 2)
 
     for i, ch in enumerate(text):
         cx = x + i * (cw + gap)
-
-        # Keep within bounds
         box_w = min(cw, x + w - cx)
         box_h = h
 
         if ch == "+":
-            # Plus sign: thick cross centered
-            bar = max(4, thickness)
+            bar = max(4, t)
             midx = cx + box_w // 2
             midy = y + box_h // 2
-            draw.rectangle(
-                (midx - bar // 2, y + inset, midx + bar // 2, y + box_h - inset),
-                fill=fill,
-            )
-            draw.rectangle(
-                (cx + inset, midy - bar // 2, cx + box_w - inset, midy + bar // 2),
-                fill=fill,
-            )
+            draw.rectangle((midx - bar // 2, y + inset, midx + bar // 2, y + box_h - inset), fill=fill)
+            draw.rectangle((cx + inset, midy - bar // 2, cx + box_w - inset, midy + bar // 2), fill=fill)
         else:
             draw_7seg_digit(
                 draw,
@@ -306,9 +281,20 @@ def draw_7seg_text(
                 max(6, box_w - 2 * inset),
                 max(6, box_h - 2 * inset),
                 ch,
-                thickness,
+                t,
                 fill=fill,
             )
+
+
+def draw_pop_frame(dr: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int) -> None:
+    bt = 2
+    dr.rectangle((x, y, x + w, y + h), outline=0, width=bt)
+
+    s = 8
+    dr.polygon([(x, y), (x + s, y), (x, y + s)], fill=0)
+    dr.polygon([(x + w, y), (x + w - s, y), (x + w, y + s)], fill=0)
+    dr.polygon([(x, y + h), (x + s, y + h), (x, y + h - s)], fill=0)
+    dr.polygon([(x + w, y + h), (x + w - s, y + h), (x + w, y + h - s)], fill=0)
 
 
 # ----------------------------
@@ -316,8 +302,9 @@ def draw_7seg_text(
 # ----------------------------
 def draw_grid(epd, fonts: Dict[str, ImageFont.ImageFont], calls3: List[Dict[str, Any]], catch_idx: int) -> None:
     """
-    Big 7-seg minutes-only display; catchable highlighted in red and thicker.
-    Layout tuned for ~1m readability.
+    Big 7-seg minutes-only display.
+    - Catchable column: red border + red digits (normal thickness)
+    - Non-catchable columns: black digits at 95% size, centered (more whitespace)
     """
     black = Image.new("1", (W, H), 255)
     red = Image.new("1", (W, H), 255)
@@ -325,16 +312,13 @@ def draw_grid(epd, fonts: Dict[str, ImageFont.ImageFont], calls3: List[Dict[str,
     dr = ImageDraw.Draw(red)
 
     now_dt = dt.datetime.now()
-
-    # Tiny header (keep it out of the way)
     db.text((4, 1), now_dt.strftime("%H:%M"), font=fonts["hdr"], fill=0)
 
-    # Maximise digit area
     margin_x = 2
     gap = 3
     col_w = (W - margin_x * 2 - gap * 2) // 3
 
-    top_y = 12  # small header only
+    top_y = 12
     box_h = H - top_y - 2
 
     for i in range(3):
@@ -344,20 +328,21 @@ def draw_grid(epd, fonts: Dict[str, ImageFont.ImageFont], calls3: List[Dict[str,
         x0 = margin_x + i * (col_w + gap)
         y0 = top_y
 
-        emphasize = (i == catch_idx)
+        is_catch = (i == catch_idx)
 
-        # Catchable in red, thicker
-        target_draw = dr if emphasize else db
-        draw_7seg_text(
-            target_draw,
-            x0,
-            y0,
-            col_w,
-            box_h,
-            txt,
-            fill=0,
-            emphasize=emphasize,
-        )
+        if is_catch:
+            # Red frame to draw attention
+            draw_pop_frame(dr, x0, y0, col_w, box_h)
+
+            # Red digits fill the whole column box
+            draw_7seg_text(dr, x0, y0, col_w, box_h, txt, fill=0)
+        else:
+            # Black digits scaled down to 95% and centered
+            sw = int(col_w * NON_HIGHLIGHT_SCALE)
+            sh = int(box_h * NON_HIGHLIGHT_SCALE)
+            sx = x0 + (col_w - sw) // 2
+            sy = y0 + (box_h - sh) // 2
+            draw_7seg_text(db, sx, sy, sw, sh, txt, fill=0)
 
     epd.display(epd.getbuffer(black), epd.getbuffer(red))
 
